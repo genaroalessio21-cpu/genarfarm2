@@ -40,6 +40,12 @@ firebase.initializeApp(firebaseConfig);
 const fbAuth = firebase.auth();
 const fbDb = firebase.database();
 
+const CAMIONES_DEF=[
+  {id:"mb1",nom:"Mercedes 1620",pat:"",propio:true},
+  {id:"mb2",nom:"Mercedes 1624",pat:"",propio:true},
+  {id:"mb3",nom:"Mercedes Atego",pat:"",propio:true},
+];
+
 function initDB(){
   try{
     const s=localStorage.getItem("gfa2");
