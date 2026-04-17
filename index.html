@@ -40,11 +40,33 @@ firebase.initializeApp(firebaseConfig);
 const fbAuth = firebase.auth();
 const fbDb = firebase.database();
 
+const C = {
+  v:"#27ae73",v2:"#2ecc87",v3:"#eafaf3",
+  az:"#3d84f5",az2:"#74b9ff",az3:"#eef4ff",
+  na:"#f4a24a",na2:"#f8c47e",na3:"#fff8ee",
+  am:"#f5c842",am3:"#fefbe8",
+  vi:"#9b87f5",vi3:"#f2f0ff",
+  ro:"#e05252",ro3:"#fff0f0",
+  ce:"#17b8c4",ce3:"#e8fafb",
+  ma:"#8B6F47",ma3:"#fdf5ec",
+  dk:"#1a2332",dk2:"#2c3e50",md:"#6b7a8d",lt:"#b0bec5",bg:"#f0f3f7"
+};
+const ACCS=[C.v,C.az,C.na,C.am,C.vi,C.ce,C.ma];
+const CERALES=["Soja","Maíz","Trigo","Girasol","Sorgo","Cebada","Avena","Otro"];
+const TINSUMO=["Herbicida","Fungicida","Insecticida","Fertilizante","Semilla","Veterinario","Ferretería","Otro"];
+const UNIDADES=["Litros","Kg","Bolsas","Unidades","Toneladas"];
+const CATGAS=["Ferretería","Veterinaria","Repuestos","Combustible","Mano de obra","Semillas","Agroquímicos","Fletes","Arrendamiento","Seguros","Mercadería","Otros"];
 const CAMIONES_DEF=[
   {id:"mb1",nom:"Mercedes 1620",pat:"",propio:true},
   {id:"mb2",nom:"Mercedes 1624",pat:"",propio:true},
   {id:"mb3",nom:"Mercedes Atego",pat:"",propio:true},
 ];
+const fmt=n=>Number(n||0).toLocaleString("es-AR");
+const hoy=()=>new Date().toISOString().split("T")[0];
+const camNom=(db,id)=>{const c=db.campos.find(x=>x.id==id);return c?c.nombre:"—";};
+const mesActual=()=>new Date().toISOString().slice(0,7);
+const addMov=(db,txt)=>({...db,movs:[{f:new Date().toLocaleDateString("es-AR"),t:txt},...(db.movs||[])].slice(0,50)});
+const CAMPANIAS=(()=>{const yr=new Date().getFullYear();const res=[];for(let i=yr-3;i<=yr+2;i++)res.push(`${i}/${i+1}`);return res;})();
 
 function initDB(){
   try{
