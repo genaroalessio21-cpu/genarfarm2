@@ -97,6 +97,8 @@ function initDB(){
       lluvias:d.lluvias||[],suelos:d.suelos||[],
       sanidad:d.sanidad||[],pesadas:d.pesadas||[],
       ventas:d.ventas||[],aplicaciones:d.aplicaciones||[],siembras:d.siembras||[],labores:d.labores||[],
+      trabajos:d.trabajos||[],arrendamientos:d.arrendamientos||[],pagosArr:d.pagosArr||[],
+      presupuestos:d.presupuestos||[],usuarios:d.usuarios||[],
       movs:d.movs||[],years:d.years||[new Date().getFullYear().toString()]
     };
   }catch(e){
@@ -1091,22 +1093,34 @@ function SecCosecha({db,setDb}){
     const loteReal=f.lote==="__otro"?(f.loteManual||""):f.lote;
     const br=parseFloat(f.brutos)||0, dc=parseFloat(f.desc)||0;
     const netos=br-dc;
-    const silos=f.silobolsas||[];
-    const kgSiloTotal=silos.reduce((s,sb)=>s+(parseFloat(sb.kg)||0),0);
+    const silosForm=f.silobolsas||[];
+    const kgSiloTotal=silosForm.reduce((s,sb)=>s+(parseFloat(sb.kg)||0),0);
 
     let newDb;
+    const cosId=editCos?editCos.id:Date.now();
+
+    // Actualizar cosecha
     if(editCos){
-      // Editar existente
-      newDb={...db,cosechas:db.cosechas.map(c=>c.id===editCos.id?{...c,...f,lote:loteReal,brutos:br,desc:dc,netos,kgSilo:kgSiloTotal,silobolsas:silos}:c)};
+      newDb={...db,cosechas:db.cosechas.map(c=>c.id===editCos.id?{...c,...f,lote:loteReal,brutos:br,desc:dc,netos,kgSilo:kgSiloTotal,silobolsas:silosForm}:c)};
+      // Eliminar silos viejos de esta cosecha y recrear con los nuevos datos
+      const silosSinEsta=newDb.silos.filter(s=>s.origenCosechaId!==editCos.id);
+      const silosEditados=silosForm.filter(sb=>sb.num&&sb.kg).map((sb,i)=>({
+        id:editCos.id*100+i+1,
+        campoId:f.campoId, lote:loteReal, cereal:f.cereal,
+        num:sb.num, kg:parseFloat(sb.kg)||0, kgRest:parseFloat(sb.kg)||0,
+        hum:f.hum||"", humMax:f.humMax||"",
+        fecha:f.fecha||hoy(), campania:f.campania||"",
+        estado:"Activa", origenCosechaId:editCos.id
+      }));
+      newDb={...newDb,silos:[...silosSinEsta,...silosEditados]};
       newDb=addMov(newDb,`✏️ Cosecha editada: ${f.cereal} ${camNom(db,f.campoId)}`);
     }else{
       // Nueva cosecha
-      const cosId=Date.now();
-      newDb={...db,cosechas:[...db.cosechas,{id:cosId,...f,lote:loteReal,brutos:br,desc:dc,netos,kgSilo:kgSiloTotal,silobolsas:silos}]};
-      // Auto-crear silobolsas en la sección Silos
-      if(silos.length>0){
-        const nuevosSilos=silos.filter(sb=>sb.num&&sb.kg).map(sb=>({
-          id:Date.now()+Math.random(),
+      newDb={...db,cosechas:[...db.cosechas,{id:cosId,...f,lote:loteReal,brutos:br,desc:dc,netos,kgSilo:kgSiloTotal,silobolsas:silosForm}]};
+      // Crear silobolsas automáticamente en Silos
+      if(silosForm.length>0){
+        const nuevosSilos=silosForm.filter(sb=>sb.num&&sb.kg).map((sb,i)=>({
+          id:cosId*100+i+1,
           campoId:f.campoId, lote:loteReal, cereal:f.cereal,
           num:sb.num, kg:parseFloat(sb.kg)||0, kgRest:parseFloat(sb.kg)||0,
           hum:f.hum||"", humMax:f.humMax||"",
@@ -2461,6 +2475,600 @@ function SecResumen({db}){
   );
 }
 
+
+// ── STOCK DE GRANOS ──────────────────────────────────────
+function SecStockGranos({db}){
+  const [filtCereal,setFiltCereal]=useState("Todos");
+
+  // Calcular stock por cereal
+  const cerealesUsados=[...new Set([
+    ...db.silos.map(s=>s.cereal),
+    ...db.ventas.map(v=>v.cereal),
+    ...(db.cosechaCamiones||[]).map(c=>c.cereal).filter(Boolean)
+  ])].filter(Boolean);
+
+  const resumenPorCereal={};
+  cerealesUsados.forEach(cer=>{
+    // En silobolsas (disponible)
+    const enSilos=db.silos.filter(s=>s.cereal===cer&&s.estado!=="Vaciada").reduce((s,x)=>s+(x.kgRest||0),0);
+    const totalEmbolsado=db.silos.filter(s=>s.cereal===cer).reduce((s,x)=>s+(x.kg||0),0);
+    const salidoSilos=db.salidasSilo.filter(s=>s.cereal===cer).reduce((s,x)=>s+(x.kg||0),0);
+
+    // Salido directo de cosecha a camión
+    const salidoCosecha=db.cosechaCamiones.filter(c=>c.cereal===cer).reduce((s,x)=>s+(x.kg||0),0);
+
+    // Vendido (toneladas → kg)
+    const vendido=db.ventas.filter(v=>v.cereal===cer&&v.estado!=="Cancelado").reduce((s,v)=>s+(parseFloat(v.toneladas||0)*1000),0);
+    const entregado=db.ventas.filter(v=>v.cereal===cer&&v.estado==="Entregado").reduce((s,v)=>s+(parseFloat(v.toneladas||0)*1000),0);
+    const pendEntrega=db.ventas.filter(v=>v.cereal===cer&&(v.estado==="Pendiente"||v.estado==="Fijado")).reduce((s,v)=>s+(parseFloat(v.toneladas||0)*1000),0);
+
+    // Total cosechado de este cereal
+    const totalCosechado=db.cosechas.filter(c=>c.cereal===cer).reduce((s,c)=>{
+      const kgCams=db.cosechaCamiones.filter(x=>x.cosechaId==c.id&&x.cereal===cer).reduce((ss,x)=>ss+x.kg,0);
+      const kgSilos=(c.silobolsas||[]).reduce((ss,sb)=>ss+(parseFloat(sb.kg)||0),0)+(parseFloat(c.kgSilo)||0);
+      return s+kgSilos+kgCams;
+    },0);
+
+    resumenPorCereal[cer]={
+      enSilos, totalEmbolsado, salidoSilos, salidoCosecha,
+      vendido, entregado, pendEntrega, totalCosechado,
+      disponible: enSilos // lo que queda en bolsas
+    };
+  });
+
+  const cerealesFilt=filtCereal==="Todos"?cerealesUsados:cerealesUsados.filter(c=>c===filtCereal);
+  const totalDisponible=cerealesFilt.reduce((s,c)=>s+(resumenPorCereal[c]?.disponible||0),0);
+
+  return(
+    <div>
+      {/* Filtro cereal */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+        {["Todos",...cerealesUsados].map(c=>(
+          <button key={c} onClick={()=>setFiltCereal(c)} style={{padding:"7px 14px",borderRadius:30,border:`1.5px solid ${filtCereal===c?C.v:"#e2e8f0"}`,background:filtCereal===c?C.v:"#fff",color:filtCereal===c?"#fff":C.md,fontSize:"0.76rem",fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+            {c}
+          </button>
+        ))}
+      </div>
+
+      {/* Tarjeta resumen total */}
+      {cerealesUsados.length>0&&<div style={{background:`linear-gradient(135deg,${C.dk},${C.dk2})`,borderRadius:18,padding:18,marginBottom:14}}>
+        <div style={{fontSize:"0.72rem",fontWeight:800,color:"rgba(255,255,255,.6)",textTransform:"uppercase",marginBottom:6}}>📦 Total disponible en bolsas</div>
+        <div style={{fontSize:"2rem",fontWeight:900,color:"#fff",marginBottom:4}}>{fmt(totalDisponible)} kg</div>
+        <div style={{fontSize:"0.82rem",color:"rgba(255,255,255,.55)"}}>{(totalDisponible/1000).toFixed(1)} toneladas</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:8,marginTop:12}}>
+          {cerealesUsados.filter(c=>resumenPorCereal[c]?.disponible>0).map(c=>(
+            <div key={c} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"8px",textAlign:"center"}}>
+              <div style={{fontSize:"0.65rem",fontWeight:800,color:"rgba(255,255,255,.6)",textTransform:"uppercase"}}>{c}</div>
+              <div style={{fontSize:"1rem",fontWeight:900,color:"#fff"}}>{fmt(resumenPorCereal[c].disponible)}</div>
+              <div style={{fontSize:"0.62rem",color:"rgba(255,255,255,.4)"}}>kg</div>
+            </div>
+          ))}
+        </div>
+      </div>}
+
+      {cerealesUsados.length===0&&<div style={{textAlign:"center",padding:40,color:C.lt}}>
+        <div style={{fontSize:"2.5rem"}}>🌾</div>
+        <p style={{marginTop:8,fontWeight:600}}>Sin datos de granos todavía</p>
+        <p style={{fontSize:"0.8rem",marginTop:4}}>Registrá cosechas y silobolsas para ver el stock</p>
+      </div>}
+
+      {/* Detalle por cereal */}
+      {cerealesFilt.map(cer=>{
+        const r=resumenPorCereal[cer];
+        if(!r)return null;
+        const pctVendido=r.totalCosechado>0?Math.round((r.vendido/r.totalCosechado)*100):0;
+        const pctDisp=r.totalCosechado>0?Math.round((r.disponible/r.totalCosechado)*100):0;
+
+        // Silobolsas activas de este cereal
+        const silosActivos=db.silos.filter(s=>s.cereal===cer&&s.estado!=="Vaciada"&&(s.kgRest||0)>0);
+
+        return(
+          <Panel key={cer} title={`🌾 ${cer}`} accent={ACCS[CERALES.indexOf(cer)%7]||C.v}>
+            {/* Grid resumen */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:8,marginBottom:12}}>
+              <div style={{background:C.v3,borderRadius:12,padding:"10px",textAlign:"center",border:`1.5px solid ${C.v}33`}}>
+                <div style={{fontSize:"0.62rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:3}}>En bolsas</div>
+                <div style={{fontSize:"1.15rem",fontWeight:900,color:C.v}}>{fmt(r.disponible)}</div>
+                <div style={{fontSize:"0.65rem",color:C.lt}}>kg disponibles</div>
+              </div>
+              <div style={{background:C.az3,borderRadius:12,padding:"10px",textAlign:"center",border:`1.5px solid ${C.az}33`}}>
+                <div style={{fontSize:"0.62rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:3}}>Vendido</div>
+                <div style={{fontSize:"1.15rem",fontWeight:900,color:C.az}}>{fmt(r.vendido)}</div>
+                <div style={{fontSize:"0.65rem",color:C.lt}}>kg ({pctVendido}%)</div>
+              </div>
+              <div style={{background:C.na3,borderRadius:12,padding:"10px",textAlign:"center",border:`1.5px solid ${C.na}33`}}>
+                <div style={{fontSize:"0.62rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:3}}>Pend. entrega</div>
+                <div style={{fontSize:"1.15rem",fontWeight:900,color:C.na}}>{fmt(r.pendEntrega)}</div>
+                <div style={{fontSize:"0.65rem",color:C.lt}}>kg</div>
+              </div>
+              <div style={{background:C.bg,borderRadius:12,padding:"10px",textAlign:"center",border:"1.5px solid #e2e8f0"}}>
+                <div style={{fontSize:"0.62rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:3}}>Total cosecha</div>
+                <div style={{fontSize:"1.15rem",fontWeight:900,color:C.dk}}>{fmt(r.totalCosechado)}</div>
+                <div style={{fontSize:"0.65rem",color:C.lt}}>kg</div>
+              </div>
+            </div>
+
+            {/* Barra de estado */}
+            {r.totalCosechado>0&&<div style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:"0.7rem",color:C.md,marginBottom:4}}>
+                <span>Disponible {pctDisp}%</span>
+                <span>Vendido {pctVendido}%</span>
+              </div>
+              <div style={{background:"#e2e8f0",borderRadius:20,height:10,overflow:"hidden",display:"flex"}}>
+                <div style={{height:"100%",width:`${pctDisp}%`,background:C.v,borderRadius:"20px 0 0 20px",transition:"width .4s"}}/>
+                <div style={{height:"100%",width:`${pctVendido}%`,background:C.az,transition:"width .4s"}}/>
+                <div style={{height:"100%",flex:1,background:"#e2e8f0"}}/>
+              </div>
+              <div style={{display:"flex",gap:12,marginTop:4,fontSize:"0.68rem"}}>
+                <span style={{color:C.v}}>● En bolsas</span>
+                <span style={{color:C.az}}>● Vendido</span>
+                <span style={{color:C.lt}}>● Salió a camión</span>
+              </div>
+            </div>}
+
+            {/* Silobolsas activas */}
+            {silosActivos.length>0&&<>
+              <div style={{fontSize:"0.7rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:6}}>🛍️ Bolsas activas ({silosActivos.length})</div>
+              {silosActivos.map(s=>{
+                const pct=s.kg>0?Math.round((s.kgRest/s.kg)*100):0;
+                return(
+                  <div key={s.id} style={{background:C.bg,borderRadius:10,padding:"9px 12px",marginBottom:6}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                      <div>
+                        <span style={{fontWeight:800,fontSize:"0.85rem"}}>Bolsa {s.num||"S/N"}</span>
+                        <span style={{fontSize:"0.72rem",color:C.md,marginLeft:8}}>Lote {s.lote||"—"} · {s.fecha||"—"}</span>
+                      </div>
+                      <span style={{fontWeight:900,color:C.v,fontSize:"0.9rem"}}>{fmt(s.kgRest)} kg</span>
+                    </div>
+                    <div style={{background:"#e2e8f0",borderRadius:20,height:5,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${pct}%`,background:pct>50?C.v:pct>20?C.am:C.ro,borderRadius:20}}/>
+                    </div>
+                    <div style={{fontSize:"0.65rem",color:C.lt,textAlign:"right",marginTop:2}}>{pct}% restante de {fmt(s.kg)} kg</div>
+                  </div>
+                );
+              })}
+            </>}
+          </Panel>
+        );
+      })}
+    </div>
+  );
+}
+
+
+// ── ARRENDAMIENTOS ────────────────────────────────────────
+function SecArrendamientos({db,setDb}){
+  const [mA,setMA]=useState(false);
+  const [mP,setMP]=useState(false); // modal pago
+  const [sel,setSel]=useState(null);
+  const [f,setF]=useState({});const sf=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const arr=db.arrendamientos||[];
+  const pagosArr=db.pagosArr||[];
+
+  const hoy30=new Date();hoy30.setDate(hoy30.getDate()+60);
+  const proxVenc=arr.filter(a=>a.vencimiento&&new Date(a.vencimiento)<=hoy30&&a.estado!=="Finalizado");
+
+  const totalMensual=arr.filter(a=>a.estado==="Vigente"&&a.tipoPago==="Mensual").reduce((s,a)=>s+(parseFloat(a.monto)||0),0);
+  const totalAnual=arr.filter(a=>a.estado==="Vigente"&&a.tipoPago==="Anual").reduce((s,a)=>s+(parseFloat(a.monto)||0),0);
+  const totalHas=arr.filter(a=>a.estado==="Vigente").reduce((s,a)=>s+(parseFloat(a.ha)||0),0);
+
+  return(
+    <div>
+      {proxVenc.length>0&&<InfoBox text={`⚠️ ${proxVenc.length} contrato${proxVenc.length>1?"s":""} vence en los próximos 60 días: ${proxVenc.map(a=>a.campo||a.propietario).join(", ")}`} color="orange" emoji="📋"/>}
+
+      <div style={{display:"flex",gap:7,marginBottom:12}}>
+        <Btn v="brown" onClick={()=>{setF({estado:"Vigente",tipoPago:"Anual",moneda:"Pesos"});setMA(true);}}>+ Arrendamiento</Btn>
+      </div>
+
+      {arr.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:9,marginBottom:12}}>
+        <GC title="Ha arrendadas" val={fmt(totalHas)+" ha"} acc={C.v} emoji="🌾"/>
+        {totalMensual>0&&<GC title="Pago mensual" val={"$"+fmt(totalMensual)} acc={C.na} emoji="📅"/>}
+        {totalAnual>0&&<GC title="Pago anual" val={"$"+fmt(totalAnual)} acc={C.az} emoji="📆"/>}
+        <GC title="Contratos" val={arr.filter(a=>a.estado==="Vigente").length} acc={C.ce} emoji="📋"/>
+      </div>}
+
+      {arr.length===0&&<div style={{textAlign:"center",padding:40,color:C.lt}}>
+        <div style={{fontSize:"2.5rem"}}>📋</div>
+        <p style={{marginTop:8,fontWeight:600}}>Sin arrendamientos registrados</p>
+      </div>}
+
+      {arr.map(a=>{
+        const pagos=pagosArr.filter(p=>p.arrId===a.id);
+        const totalPagado=pagos.reduce((s,p)=>s+(parseFloat(p.monto)||0),0);
+        const ec=a.estado==="Vigente"?"green":a.estado==="Vencido"?"red":"gray";
+        const diasVenc=a.vencimiento?Math.round((new Date(a.vencimiento)-new Date())/(1000*60*60*24)):null;
+        return(
+          <Panel key={a.id} accent={a.estado==="Vigente"?C.v:C.ro}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div>
+                <div style={{fontWeight:900,fontSize:"0.98rem"}}>🌾 {a.campo||"—"}</div>
+                <div style={{fontSize:"0.74rem",color:C.md,marginTop:2}}>
+                  👤 {a.propietario||"—"} · {a.ha||"?"} ha
+                  {a.localidad?` · 📍 ${a.localidad}`:""}
+                </div>
+              </div>
+              <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                <Bdg label={a.estado||"Vigente"} col={ec}/>
+                <Btn sz="xs" v="ghost" onClick={()=>{setF({...a});setMA(true);}}>✏️</Btn>
+                <Btn sz="xs" v="danger" onClick={()=>{if(confirm("¿Eliminar?"))setDb({...db,arrendamientos:(db.arrendamientos||[]).filter(x=>x.id!==a.id)});}}>🗑️</Btn>
+              </div>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:8,marginBottom:10}}>
+              <div style={{background:C.bg,borderRadius:10,padding:"8px",textAlign:"center"}}>
+                <div style={{fontSize:"0.62rem",color:C.md,fontWeight:700,textTransform:"uppercase"}}>Monto</div>
+                <div style={{fontSize:"1rem",fontWeight:900,color:C.dk}}>{a.moneda==="Quintales"?`${a.monto} qq`:`$${fmt(a.monto)}`}</div>
+                <div style={{fontSize:"0.65rem",color:C.lt}}>{a.tipoPago||"Anual"}</div>
+              </div>
+              <div style={{background:C.bg,borderRadius:10,padding:"8px",textAlign:"center"}}>
+                <div style={{fontSize:"0.62rem",color:C.md,fontWeight:700,textTransform:"uppercase"}}>$/ha</div>
+                <div style={{fontSize:"1rem",fontWeight:900,color:C.dk}}>{a.ha&&a.monto&&a.moneda!=="Quintales"?"$"+fmt(Math.round(parseFloat(a.monto)/parseFloat(a.ha))):"—"}</div>
+              </div>
+              {diasVenc!==null&&<div style={{background:diasVenc<=60?C.ro3:C.v3,borderRadius:10,padding:"8px",textAlign:"center"}}>
+                <div style={{fontSize:"0.62rem",color:C.md,fontWeight:700,textTransform:"uppercase"}}>Vencimiento</div>
+                <div style={{fontSize:"0.85rem",fontWeight:900,color:diasVenc<=60?C.ro:C.v}}>{a.vencimiento}</div>
+                <div style={{fontSize:"0.62rem",color:diasVenc<=60?C.ro:C.lt}}>{diasVenc>0?`${diasVenc} días`:diasVenc===0?"Hoy":"Vencido"}</div>
+              </div>}
+            </div>
+
+            {a.condiciones&&<div style={{background:C.bg,borderRadius:9,padding:"7px 10px",fontSize:"0.78rem",color:C.md,marginBottom:8}}>📝 {a.condiciones}</div>}
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:"0.74rem",color:C.md}}>Pagado: <b style={{color:C.v}}>${fmt(totalPagado)}</b></div>
+              <Btn sz="xs" v="green" onClick={()=>{setSel(a);setF({fecha:hoy(),arrId:a.id,monto:a.monto,concepto:`Arrendamiento ${a.campo||""}`});setMP(true);}}>💰 Registrar pago</Btn>
+            </div>
+
+            {pagos.length>0&&<div style={{marginTop:8}}>
+              <div style={{fontSize:"0.68rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:4}}>Últimos pagos:</div>
+              {pagos.slice(-3).reverse().map(p=>(
+                <div key={p.id} style={{display:"flex",justifyContent:"space-between",fontSize:"0.74rem",padding:"4px 0",borderBottom:"1px solid #f0f4f8"}}>
+                  <span>{p.fecha} · {p.concepto||"Pago"}</span>
+                  <span style={{fontWeight:800,color:C.v}}>${fmt(p.monto)}</span>
+                </div>
+              ))}
+            </div>}
+          </Panel>
+        );
+      })}
+
+      {/* MODAL ARRENDAMIENTO */}
+      <Modal open={mA} onClose={()=>{setMA(false);setF({});}} title={f.id?"✏️ Editar Arrendamiento":"📋 Nuevo Arrendamiento"}>
+        <FR>
+          <Inp label="Campo / Establecimiento" value={f.campo||""} onChange={v=>sf("campo",v)} placeholder="Ej: La Esperanza"/>
+          <Inp label="Propietario / Arrendador" value={f.propietario||""} onChange={v=>sf("propietario",v)} placeholder="Ej: Juan Pérez"/>
+        </FR>
+        <FR>
+          <Inp label="Localidad" value={f.localidad||""} onChange={v=>sf("localidad",v)}/>
+          <Inp label="Hectáreas" type="number" value={f.ha||""} onChange={v=>sf("ha",v)}/>
+        </FR>
+        <div style={{background:C.v3,border:"1.5px solid #b8f0d8",borderRadius:13,padding:13,marginBottom:10}}>
+          <div style={{fontSize:"0.72rem",fontWeight:800,color:C.v,textTransform:"uppercase",marginBottom:9}}>💰 Condiciones de pago</div>
+          <FR>
+            <Inp label="Tipo de pago" value={f.tipoPago||"Anual"} onChange={v=>sf("tipoPago",v)} opts={["Mensual","Trimestral","Semestral","Anual","Por cosecha"]}/>
+            <Inp label="Moneda" value={f.moneda||"Pesos"} onChange={v=>sf("moneda",v)} opts={["Pesos","Dólares","Quintales de soja","Quintales de maíz"]}/>
+          </FR>
+          <Inp label={`Monto (${f.moneda==="Quintales de soja"||f.moneda==="Quintales de maíz"?"qq":f.moneda==="Dólares"?"USD":"$"})`} type="number" value={f.monto||""} onChange={v=>sf("monto",v)} sx={{marginBottom:0}}/>
+        </div>
+        <FR>
+          <Inp label="Inicio del contrato" type="date" value={f.inicio||""} onChange={v=>sf("inicio",v)}/>
+          <Inp label="Vencimiento" type="date" value={f.vencimiento||""} onChange={v=>sf("vencimiento",v)}/>
+        </FR>
+        <FR>
+          <Inp label="Estado" value={f.estado||"Vigente"} onChange={v=>sf("estado",v)} opts={["Vigente","En negociación","Vencido","Finalizado"]}/>
+          <Inp label="Teléfono propietario" value={f.tel||""} onChange={v=>sf("tel",v)}/>
+        </FR>
+        <Inp label="Condiciones especiales / Notas" value={f.condiciones||""} onChange={v=>sf("condiciones",v)} sx={{marginBottom:4}}/>
+        <MBtns onClose={()=>{setMA(false);setF({});}} sv="brown" onSave={()=>{
+          const nd=f.id
+            ?addMov({...db,arrendamientos:(db.arrendamientos||[]).map(x=>x.id===f.id?{...f}:x)},`✏️ Arrendamiento editado: ${f.campo}`)
+            :addMov({...db,arrendamientos:[...(db.arrendamientos||[]),{id:Date.now(),...f}]},`📋 Arrendamiento: ${f.campo} ${f.ha}ha`);
+          setDb(nd);setMA(false);setF({});
+        }}/>
+      </Modal>
+
+      {/* MODAL PAGO */}
+      <Modal open={mP} onClose={()=>{setMP(false);setSel(null);setF({});}} title="💰 Registrar Pago de Arrendamiento">
+        {sel&&<InfoBox text={`📋 ${sel.campo||"—"} · ${sel.propietario||"—"} · ${sel.ha||"?"}ha`} color="brown" emoji=""/>}
+        <FR>
+          <Inp label="Fecha" type="date" value={f.fecha||hoy()} onChange={v=>sf("fecha",v)}/>
+          <Inp label="Monto ($)" type="number" value={f.monto||""} onChange={v=>sf("monto",v)}/>
+        </FR>
+        <Inp label="Concepto / Período" value={f.concepto||""} onChange={v=>sf("concepto",v)} placeholder="Ej: Arrendamiento campaña 2024/25" sx={{marginBottom:9}}/>
+        <Inp label="Nota" value={f.nota||""} onChange={v=>sf("nota",v)} sx={{marginBottom:4}}/>
+        <MBtns onClose={()=>{setMP(false);setSel(null);setF({});}} sv="green" saveLabel="Registrar pago" onSave={()=>{
+          const nd=addMov({...db,pagosArr:[...(db.pagosArr||[]),{id:Date.now(),...f,monto:parseFloat(f.monto)||0}]},`💰 Arrend. ${sel?sel.campo:"—"}: $${fmt(f.monto)}`);
+          setDb(nd);setMP(false);setSel(null);setF({});
+        }}/>
+      </Modal>
+    </div>
+  );
+}
+
+
+// ── PRESUPUESTO POR CAMPAÑA ───────────────────────────────
+function SecPresupuesto({db,setDb}){
+  const [campania,setCampania]=useState(CAMPANIAS[3]);
+  const [mI,setMI]=useState(false); // modal item
+  const [f,setF]=useState({});const sf=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const presupuestos=db.presupuestos||[];
+  const itemsCamp=presupuestos.filter(p=>p.campania===campania);
+
+  // Real de esa campaña
+  const gastosReal=db.gastos.filter(g=>g.campania===campania||(g.fecha&&g.fecha.startsWith(campania.slice(0,4)))).reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+  const insumosReal=(db.comprasIns||[]).filter(c=>c.fecha&&c.fecha.startsWith(campania.slice(0,4))).reduce((s,c)=>s+(parseFloat(c.precio||0)*parseFloat(c.qty||0)),0);
+  const personalReal=db.pagos.filter(p=>p.fecha&&p.fecha.startsWith(campania.slice(0,4))).reduce((s,p)=>s+(parseFloat(p.monto)||0),0);
+  const combReal=db.combustible.filter(c=>c.fecha&&c.fecha.startsWith(campania.slice(0,4))).reduce((s,c)=>s+(parseFloat(c.total)||0),0);
+  const trabajosReal=(db.trabajos||[]).filter(t=>t.fecha&&t.fecha.startsWith(campania.slice(0,4))).reduce((s,t)=>s+(parseFloat(t.monto)||0),0);
+  const totalReal=gastosReal+insumosReal+personalReal+combReal+trabajosReal;
+
+  const ingresosReal=db.ventas.filter(v=>v.fecha&&v.fecha.startsWith(campania.slice(0,4))).reduce((s,v)=>s+(parseFloat(v.precio||0)*parseFloat(v.toneladas||0)*1000),0);
+
+  // Presupuestado
+  const totalPresupGastos=itemsCamp.filter(p=>p.tipo==="gasto").reduce((s,p)=>s+(parseFloat(p.monto)||0),0);
+  const totalPresupIngresos=itemsCamp.filter(p=>p.tipo==="ingreso").reduce((s,p)=>s+(parseFloat(p.monto)||0),0);
+
+  const CATS_GASTO=["Insumos/Agroquímicos","Semillas","Fertilizantes","Combustible","Mano de obra","Arrendamiento","Servicios/Contratistas","Fletes","Seguros","Maquinaria","Otros gastos"];
+  const CATS_INGRESO=["Venta soja","Venta maíz","Venta trigo","Venta girasol","Venta animales","Otros ingresos"];
+
+  return(
+    <div>
+      {/* Selector campaña */}
+      <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:14,flexWrap:"wrap"}}>
+        <span style={{fontSize:"0.75rem",fontWeight:800,color:C.md}}>Campaña:</span>
+        {CAMPANIAS.map(cp=>(
+          <button key={cp} onClick={()=>setCampania(cp)} style={{padding:"6px 14px",borderRadius:30,border:`1.5px solid ${cp===campania?C.az:"#e2e8f0"}`,background:cp===campania?C.az:"#fff",color:cp===campania?"#fff":C.md,fontSize:"0.76rem",fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>{cp}</button>
+        ))}
+      </div>
+
+      <div style={{display:"flex",gap:7,marginBottom:12}}>
+        <Btn v="blue" onClick={()=>{setF({campania,tipo:"gasto",cat:"Insumos/Agroquímicos"});setMI(true);}}>+ Ítem gasto</Btn>
+        <Btn v="green" onClick={()=>{setF({campania,tipo:"ingreso",cat:"Venta soja"});setMI(true);}}>+ Ítem ingreso</Btn>
+      </div>
+
+      {/* Comparación presupuestado vs real */}
+      {(totalPresupGastos>0||totalPresupIngresos>0)&&<>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+          {/* GASTOS */}
+          <Panel accent={C.ro}>
+            <div style={{fontSize:"0.7rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:8}}>💸 Gastos</div>
+            <div style={{marginBottom:6}}>
+              <div style={{fontSize:"0.7rem",color:C.md}}>Presupuestado</div>
+              <div style={{fontSize:"1.1rem",fontWeight:900,color:C.dk}}>${fmt(totalPresupGastos)}</div>
+            </div>
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:"0.7rem",color:C.md}}>Real</div>
+              <div style={{fontSize:"1.1rem",fontWeight:900,color:totalReal>totalPresupGastos?C.ro:C.v}}>${fmt(totalReal)}</div>
+            </div>
+            {totalPresupGastos>0&&<>
+              <div style={{background:"#f0f4f8",borderRadius:20,height:7,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${Math.min(Math.round((totalReal/totalPresupGastos)*100),100)}%`,background:totalReal>totalPresupGastos?C.ro:C.v,borderRadius:20}}/>
+              </div>
+              <div style={{fontSize:"0.68rem",color:C.md,textAlign:"right",marginTop:2}}>{Math.round((totalReal/totalPresupGastos)*100)}% ejecutado</div>
+            </>}
+          </Panel>
+          {/* INGRESOS */}
+          <Panel accent={C.v}>
+            <div style={{fontSize:"0.7rem",fontWeight:800,color:C.md,textTransform:"uppercase",marginBottom:8}}>💰 Ingresos</div>
+            <div style={{marginBottom:6}}>
+              <div style={{fontSize:"0.7rem",color:C.md}}>Presupuestado</div>
+              <div style={{fontSize:"1.1rem",fontWeight:900,color:C.dk}}>${fmt(totalPresupIngresos)}</div>
+            </div>
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:"0.7rem",color:C.md}}>Real</div>
+              <div style={{fontSize:"1.1rem",fontWeight:900,color:ingresosReal>=totalPresupIngresos?C.v:C.na}}>${fmt(ingresosReal)}</div>
+            </div>
+            {totalPresupIngresos>0&&<>
+              <div style={{background:"#f0f4f8",borderRadius:20,height:7,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${Math.min(Math.round((ingresosReal/totalPresupIngresos)*100),100)}%`,background:C.v,borderRadius:20}}/>
+              </div>
+              <div style={{fontSize:"0.68rem",color:C.md,textAlign:"right",marginTop:2}}>{Math.round((ingresosReal/totalPresupIngresos)*100)}% cobrado</div>
+            </>}
+          </Panel>
+        </div>
+
+        {/* Resultado presupuestado vs real */}
+        <div style={{background:`linear-gradient(135deg,${C.dk},${C.dk2})`,borderRadius:16,padding:14,marginBottom:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:"0.65rem",color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Resultado presupuestado</div>
+              <div style={{fontSize:"1.2rem",fontWeight:900,color:totalPresupIngresos-totalPresupGastos>=0?C.v2:C.ro}}>{totalPresupIngresos-totalPresupGastos>=0?"+":""} ${fmt(totalPresupIngresos-totalPresupGastos)}</div>
+            </div>
+            <div style={{textAlign:"center",borderLeft:"1px solid rgba(255,255,255,.15)"}}>
+              <div style={{fontSize:"0.65rem",color:"rgba(255,255,255,.6)",fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Resultado real</div>
+              <div style={{fontSize:"1.2rem",fontWeight:900,color:ingresosReal-totalReal>=0?C.v2:C.ro}}>{ingresosReal-totalReal>=0?"+":""} ${fmt(ingresosReal-totalReal)}</div>
+            </div>
+          </div>
+        </div>
+      </>}
+
+      {/* Items presupuestados */}
+      {itemsCamp.length===0&&<div style={{textAlign:"center",padding:30,color:C.lt}}>
+        <div style={{fontSize:"2.5rem"}}>📊</div>
+        <p style={{marginTop:8,fontWeight:600}}>Sin presupuesto para {campania}</p>
+        <p style={{fontSize:"0.8rem",marginTop:4}}>Agregá ítems de ingresos y gastos esperados</p>
+      </div>}
+
+      {itemsCamp.length>0&&<>
+        {/* Gastos presupuestados */}
+        {itemsCamp.filter(i=>i.tipo==="gasto").length>0&&<Panel title="💸 Gastos presupuestados" accent={C.ro}>
+          {itemsCamp.filter(i=>i.tipo==="gasto").map(item=>(
+            <div key={item.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #f0f4f8"}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:"0.85rem"}}>{item.concepto||item.cat}</div>
+                <div style={{fontSize:"0.7rem",color:C.md}}>{item.cat}</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontWeight:900,color:C.ro}}>${fmt(item.monto)}</span>
+                <Btn sz="xs" v="danger" onClick={()=>{if(confirm("¿Eliminar?"))setDb({...db,presupuestos:(db.presupuestos||[]).filter(x=>x.id!==item.id)});}}>🗑️</Btn>
+              </div>
+            </div>
+          ))}
+        </Panel>}
+
+        {/* Ingresos presupuestados */}
+        {itemsCamp.filter(i=>i.tipo==="ingreso").length>0&&<Panel title="💰 Ingresos presupuestados" accent={C.v}>
+          {itemsCamp.filter(i=>i.tipo==="ingreso").map(item=>(
+            <div key={item.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #f0f4f8"}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:"0.85rem"}}>{item.concepto||item.cat}</div>
+                <div style={{fontSize:"0.7rem",color:C.md}}>{item.cat}{item.toneladas?` · ${item.toneladas}t a $${fmt(item.precio)}/t`:""}</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontWeight:900,color:C.v}}>${fmt(item.monto)}</span>
+                <Btn sz="xs" v="danger" onClick={()=>{if(confirm("¿Eliminar?"))setDb({...db,presupuestos:(db.presupuestos||[]).filter(x=>x.id!==item.id)});}}>🗑️</Btn>
+              </div>
+            </div>
+          ))}
+        </Panel>}
+      </>}
+
+      {/* MODAL ITEM */}
+      <Modal open={mI} onClose={()=>{setMI(false);setF({});}} title={f.tipo==="ingreso"?"💰 Ítem de ingreso esperado":"💸 Ítem de gasto esperado"}>
+        <Inp label="Categoría" value={f.cat||""} onChange={v=>sf("cat",v)} opts={f.tipo==="ingreso"?CATS_INGRESO:CATS_GASTO} sx={{marginBottom:10}}/>
+        <Inp label="Concepto / Descripción" value={f.concepto||""} onChange={v=>sf("concepto",v)} placeholder="Ej: Semilla soja 200 bolsas" sx={{marginBottom:10}}/>
+        {f.tipo==="ingreso"&&<>
+          <FR>
+            <Inp label="Toneladas esperadas" type="number" value={f.toneladas||""} onChange={v=>{sf("toneladas",v);sf("monto",String(parseFloat(v||0)*parseFloat(f.precio||0)*1000));}}/>
+            <Inp label="Precio estimado $/t" type="number" value={f.precio||""} onChange={v=>{sf("precio",v);sf("monto",String(parseFloat(f.toneladas||0)*parseFloat(v||0)*1000));}}/>
+          </FR>
+        </>}
+        <Inp label="Monto total ($)" type="number" value={f.monto||""} onChange={v=>sf("monto",v)} sx={{marginBottom:4}}/>
+        <MBtns onClose={()=>{setMI(false);setF({});}} sv={f.tipo==="ingreso"?"green":"orange"} onSave={()=>{
+          const nd=addMov({...db,presupuestos:[...(db.presupuestos||[]),{id:Date.now(),...f,monto:parseFloat(f.monto)||0}]},`📊 Presup. ${f.tipo}: ${f.concepto||f.cat} $${fmt(f.monto)}`);
+          setDb(nd);setMI(false);setF({});
+        }}/>
+      </Modal>
+    </div>
+  );
+}
+
+
+// ── GESTIÓN DE USUARIOS / PERMISOS ───────────────────────
+function SecUsuarios({db,setDb,userEmail}){
+  const [mU,setMU]=useState(false);
+  const [f,setF]=useState({});const sf=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const usuarios=db.usuarios||[];
+
+  const ROLES=[
+    {id:"admin",label:"👑 Administrador",desc:"Ve y edita todo. Sin restricciones.",color:C.ro},
+    {id:"socio",label:"🤝 Socio / Dueño",desc:"Ve todo pero no puede cambiar usuarios ni borrar datos.",color:C.az},
+    {id:"operario",label:"👷 Operario",desc:"Solo puede cargar datos operativos: labores, lluvias, siembras, sanidad. No ve precios ni gastos.",color:C.v},
+    {id:"consulta",label:"👁️ Solo consulta",desc:"Solo puede ver, no puede cargar nada.",color:C.md},
+  ];
+
+  const PERMISOS_POR_ROL={
+    admin:["todo"],
+    socio:["ver_todo","editar_operativo","editar_financiero"],
+    operario:["labores","siembra","lluvias","sanidad","animales_basico","tareas","cosecha_basico"],
+    consulta:["ver_todo"]
+  };
+
+  return(
+    <div>
+      <InfoBox text="Agregá los emails de las personas que acceden a la app. Cada uno inicia sesión con su propia cuenta en Firebase." color="blue" emoji="👥"/>
+
+      <div style={{display:"flex",gap:7,marginBottom:12}}>
+        <Btn v="blue" onClick={()=>{setF({rol:"operario"});setMU(true);}}>+ Agregar usuario</Btn>
+      </div>
+
+      {/* Tu cuenta */}
+      <Panel title="👑 Tu cuenta" accent={C.ro}>
+        <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0"}}>
+          <div style={{width:40,height:40,borderRadius:"50%",background:`linear-gradient(135deg,${C.ro},${C.na})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.2rem",flexShrink:0}}>👑</div>
+          <div>
+            <div style={{fontWeight:800,fontSize:"0.9rem"}}>{userEmail||"Tu cuenta"}</div>
+            <div style={{fontSize:"0.74rem",color:C.md}}>Administrador · Acceso total</div>
+          </div>
+        </div>
+      </Panel>
+
+      {/* Roles disponibles */}
+      <Panel title="📋 Roles disponibles" accent={C.az}>
+        {ROLES.map(r=>(
+          <div key={r.id} style={{display:"flex",gap:10,padding:"10px 0",borderBottom:"1px solid #f0f4f8",alignItems:"flex-start"}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:r.color,marginTop:6,flexShrink:0}}/>
+            <div>
+              <div style={{fontWeight:800,fontSize:"0.85rem"}}>{r.label}</div>
+              <div style={{fontSize:"0.74rem",color:C.md,marginTop:2}}>{r.desc}</div>
+            </div>
+          </div>
+        ))}
+      </Panel>
+
+      {/* Usuarios registrados */}
+      {usuarios.length===0
+        ?<div style={{textAlign:"center",padding:30,color:C.lt}}>
+          <div style={{fontSize:"2.5rem"}}>👥</div>
+          <p style={{marginTop:8,fontWeight:600}}>Sin usuarios adicionales</p>
+          <p style={{fontSize:"0.8rem",marginTop:4}}>Agregá a tu papá o empleados para que accedan con sus emails</p>
+        </div>
+        :usuarios.map(u=>{
+          const rol=ROLES.find(r=>r.id===u.rol)||ROLES[0];
+          return(
+            <Panel key={u.id} accent={rol.color}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                  <div style={{width:40,height:40,borderRadius:"50%",background:`linear-gradient(135deg,${rol.color},${rol.color}88)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.2rem",flexShrink:0}}>{rol.label.split(" ")[0]}</div>
+                  <div>
+                    <div style={{fontWeight:800,fontSize:"0.9rem"}}>{u.nombre||u.email}</div>
+                    <div style={{fontSize:"0.74rem",color:C.md}}>{u.email}</div>
+                    <div style={{marginTop:4}}><Bdg label={rol.label.replace(/^[^\s]+\s/,"")} col={u.rol==="admin"?"red":u.rol==="socio"?"blue":u.rol==="operario"?"green":"gray"}/></div>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:4}}>
+                  <Btn sz="xs" v="ghost" onClick={()=>{setF({...u});setMU(true);}}>✏️</Btn>
+                  <Btn sz="xs" v="danger" onClick={()=>{if(confirm("¿Eliminar usuario?"))setDb({...db,usuarios:(db.usuarios||[]).filter(x=>x.id!==u.id)});}}>🗑️</Btn>
+                </div>
+              </div>
+              {u.nota&&<div style={{fontSize:"0.74rem",color:C.md,marginTop:8,background:C.bg,borderRadius:8,padding:"5px 9px"}}>📝 {u.nota}</div>}
+            </Panel>
+          );
+        })}
+
+      {/* Instrucciones */}
+      <Panel title="ℹ️ Cómo funciona" accent={C.md}>
+        <div style={{fontSize:"0.8rem",color:C.dk2,lineHeight:1.6}}>
+          <p style={{marginBottom:8}}>1. Agregás el email y rol de cada persona acá</p>
+          <p style={{marginBottom:8}}>2. Esa persona entra a <b>genarfarm2.vercel.app</b> y crea su cuenta en Firebase con ese mismo email</p>
+          <p style={{marginBottom:8}}>3. La app detecta el rol automáticamente y muestra solo lo que le corresponde</p>
+          <p style={{color:C.md,fontSize:"0.74rem"}}>⚙️ La restricción real de permisos requiere configuración adicional en Firebase. Por ahora registrá los usuarios para tener el listado listo.</p>
+        </div>
+      </Panel>
+
+      {/* MODAL USUARIO */}
+      <Modal open={mU} onClose={()=>{setMU(false);setF({});}} title={f.id?"✏️ Editar Usuario":"👥 Nuevo Usuario"}>
+        <FR>
+          <Inp label="Nombre" value={f.nombre||""} onChange={v=>sf("nombre",v)} placeholder="Ej: Esteban"/>
+          <Inp label="Email de acceso" value={f.email||""} onChange={v=>sf("email",v)} placeholder="email@gmail.com"/>
+        </FR>
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:"0.7rem",fontWeight:800,color:C.md,textTransform:"uppercase",letterSpacing:"0.4px",display:"block",marginBottom:8}}>Rol / Nivel de acceso</label>
+          {ROLES.map(r=>(
+            <button key={r.id} onClick={()=>sf("rol",r.id)} style={{width:"100%",display:"flex",gap:12,alignItems:"center",padding:"11px 13px",marginBottom:6,borderRadius:12,border:`2px solid ${f.rol===r.id?r.color:"#e2e8f0"}`,background:f.rol===r.id?`${r.color}11`:"#fff",cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+              <div style={{width:10,height:10,borderRadius:"50%",background:r.color,flexShrink:0}}/>
+              <div>
+                <div style={{fontWeight:800,fontSize:"0.85rem",color:f.rol===r.id?r.color:C.dk}}>{r.label}</div>
+                <div style={{fontSize:"0.72rem",color:C.md}}>{r.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+        <Inp label="Nota interna (opcional)" value={f.nota||""} onChange={v=>sf("nota",v)} sx={{marginBottom:4}}/>
+        <MBtns onClose={()=>{setMU(false);setF({});}} sv="blue" onSave={()=>{
+          if(!f.email)return alert("Ingresá el email");
+          const nd=f.id
+            ?{...db,usuarios:(db.usuarios||[]).map(x=>x.id===f.id?{...f}:x)}
+            :{...db,usuarios:[...(db.usuarios||[]),{id:Date.now(),...f}]};
+          setDb(nd);setMU(false);setF({});
+        }}/>
+      </Modal>
+    </div>
+  );
+}
+
 // ── DATOS (exportar/importar) ─────────────────────────────
 
 // ── TRABAJOS / SERVICIOS ──────────────────────────────────
@@ -2643,7 +3251,10 @@ const NAVS=[
   {id:"ventas",l:"Ventas",i:"📋"},{id:"maquinas",l:"Máquinas",i:"🚜"},
   {id:"camiones",l:"Camiones",i:"🚛"},{id:"personal",l:"Personal",i:"👷"},
   {id:"comb",l:"Combustible",i:"⛽"},{id:"agenda",l:"Agenda",i:"📅"},
+  {id:"stock",l:"Stock Granos",i:"📦"},{id:"arrendamientos",l:"Arrend.",i:"📋"},
+  {id:"presupuesto",l:"Presupuesto",i:"🎯"},
   {id:"resumen",l:"Resumen",i:"📈"},{id:"trabajos",l:"Trabajos",i:"🔧"},{id:"reporte",l:"Reporte",i:"📊"},
+  {id:"usuarios",l:"Usuarios",i:"👥"},
   {id:"datos",l:"Mis Datos",i:"💾"},
 ];
 // 5 accesos rápidos fijos abajo
@@ -2814,6 +3425,10 @@ function App(){
         {sec==="trabajos" &&<SecTrabajos db={db} setDb={save}/> }
         {sec==="resumen"  &&<SecResumen db={db}/> }
         {sec==="reporte"  &&<SecReporte db={db}/>}
+        {sec==="stock"    &&<SecStockGranos db={db}/>}
+        {sec==="arrendamientos"&&<SecArrendamientos db={db} setDb={save}/>}
+        {sec==="presupuesto"&&<SecPresupuesto db={db} setDb={save}/>}
+        {sec==="usuarios" &&<SecUsuarios db={db} setDb={save} userEmail={user&&user.email}/>}
         {sec==="datos"    &&<SecDatos db={db} setDb={save}/>}
       </div>
 
