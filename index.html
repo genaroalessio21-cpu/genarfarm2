@@ -68,6 +68,18 @@ const mesActual=()=>new Date().toISOString().slice(0,7);
 const addMov=(db,txt)=>({...db,movs:[{f:new Date().toLocaleDateString("es-AR"),t:txt},...(db.movs||[])].slice(0,50)});
 const CAMPANIAS=(()=>{const yr=new Date().getFullYear();const res=[];for(let i=yr-3;i<=yr+2;i++)res.push(`${i}/${i+1}`);return res;})();
 
+
+function Buscador({value,onChange,placeholder="🔍 Buscar..."}){
+  return(
+    <div style={{position:"relative",marginBottom:12}}>
+      <input type="text" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+        style={{width:"100%",padding:"11px 14px 11px 38px",border:"1.5px solid #e2e8f0",borderRadius:13,fontFamily:"inherit",fontSize:"0.9rem",color:"#1a2332",background:"#fff",outline:"none"}}/>
+      <span style={{position:"absolute",left:13,top:"50%",transform:"translateY(-50%)",fontSize:"1rem",pointerEvents:"none"}}>🔍</span>
+      {value&&<button onClick={()=>onChange("")} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:"1rem",color:"#6b7a8d"}}>✕</button>}
+    </div>
+  );
+}
+
 function initDB(){
   try{
     const s=localStorage.getItem("gfa2");
@@ -88,7 +100,7 @@ function initDB(){
       movs:d.movs||[],years:d.years||[new Date().getFullYear().toString()]
     };
   }catch(e){
-    return{campos:[],lotes:[],animales:[],movAnim:[],silos:[],salidasSilo:[],insumos:[],retiros:[],comprasIns:[],gastos:[],cosechas:[],cosechaCamiones:[],maquinas:[],camiones:CAMIONES_DEF,personal:[],pagos:[],combustible:[],tareas:[],lluvias:[],suelos:[],sanidad:[],pesadas:[],ventas:[],aplicaciones:[],siembras:[],labores:[],movs:[],years:[new Date().getFullYear().toString()]};
+    return{campos:[],lotes:[],animales:[],movAnim:[],silos:[],salidasSilo:[],insumos:[],retiros:[],comprasIns:[],gastos:[],cosechas:[],cosechaCamiones:[],maquinas:[],camiones:CAMIONES_DEF,personal:[],pagos:[],combustible:[],tareas:[],lluvias:[],suelos:[],sanidad:[],pesadas:[],ventas:[],aplicaciones:[],siembras:[],labores:[],trabajos:[],movs:[],years:[new Date().getFullYear().toString()]};
   }
 }
 
@@ -2064,6 +2076,120 @@ function SecReporte({db}){
 
 
 // ── DATOS (exportar/importar) ─────────────────────────────
+
+// ── TRABAJOS / SERVICIOS ──────────────────────────────────
+function SecTrabajos({db,setDb}){
+  const [mT,setMT]=useState(false);
+  const [busqueda,setBusqueda]=useState("");
+  const [f,setF]=useState({});const sf=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const TIPOS_TRABAJO=[
+    "Mecánico","Molinero","Alambrador","Electricista","Soldador",
+    "Pintura","Construcción","Destronque","Nivelación","Pozo/Perforación",
+    "Instalación riego","Sanitario","Carpintero","Otro"
+  ];
+  const MODALIDADES=["Efectivo","Transferencia","Cheque","A cuenta","Otro"];
+
+  const trabajos=db.trabajos||[];
+  const bq=busqueda.toLowerCase().trim();
+  const lista=bq?trabajos.filter(t=>(t.tipo||"").toLowerCase().includes(bq)||(t.proveedor||"").toLowerCase().includes(bq)||(t.desc||"").toLowerCase().includes(bq)||(t.campo||"").toLowerCase().includes(bq)):trabajos;
+
+  const totalPagado=trabajos.reduce((s,t)=>s+(parseFloat(t.monto)||0),0);
+  const totalPend=trabajos.filter(t=>t.estado==="Pendiente").reduce((s,t)=>s+(parseFloat(t.monto)||0),0);
+
+  return(
+    <div>
+      <div style={{display:"flex",gap:7,marginBottom:12}}>
+        <Btn v="teal" onClick={()=>{setF({fecha:hoy(),estado:"Pagado",campoId:(db.campos[0]&&db.campos[0].id),modalidad:"Efectivo"});setMT(true);}}>+ Registrar trabajo</Btn>
+      </div>
+
+      {trabajos.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
+        <GC title="Total pagado" val={"$"+fmt(totalPagado)} acc={C.v} emoji="✅"/>
+        <GC title="Pendiente" val={"$"+fmt(totalPend)} acc={C.ro} emoji="⏳"/>
+        <GC title="Trabajos" val={trabajos.length} acc={C.az} emoji="🔧"/>
+      </div>}
+
+      <Buscador value={busqueda} onChange={setBusqueda} placeholder="🔍 Buscar por tipo, proveedor o campo..."/>
+
+      {!lista.length
+        ?<div style={{textAlign:"center",padding:30,color:C.lt}}><div style={{fontSize:"2.5rem"}}>🔧</div><p style={{marginTop:8}}>{busqueda?"Sin resultados":"Sin trabajos registrados"}</p></div>
+        :lista.slice().reverse().map(t=>(
+          <Panel key={t.id} accent={t.estado==="Pendiente"?C.ro:C.v}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div>
+                <div style={{fontWeight:900,fontSize:"0.96rem"}}>🔧 {t.tipo||"—"}{t.proveedor?` — ${t.proveedor}`:""}</div>
+                <div style={{fontSize:"0.74rem",color:C.md,marginTop:2}}>
+                  📅 {t.fecha}{t.campoId?` · 🌾 ${camNom(db,t.campoId)}`:""}
+                </div>
+              </div>
+              <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                <Bdg label={t.estado||"Pagado"} col={t.estado==="Pendiente"?"red":"green"}/>
+                <Btn sz="xs" v="ghost" onClick={()=>{setF({...t});setMT(true);}}>✏️</Btn>
+                <Btn sz="xs" v="danger" onClick={()=>{if(confirm("¿Eliminar?"))setDb({...db,trabajos:(db.trabajos||[]).filter(x=>x.id!==t.id)});}}>🗑️</Btn>
+              </div>
+            </div>
+            {t.desc&&<div style={{background:C.bg,borderRadius:9,padding:"7px 10px",fontSize:"0.8rem",marginBottom:6}}>{t.desc}</div>}
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+              <span style={{fontSize:"1.15rem",fontWeight:900,color:C.dk}}>${fmt(t.monto)}</span>
+              {t.modalidad&&<Bdg label={t.modalidad} col="blue"/>}
+              {t.factura&&<span style={{fontSize:"0.72rem",color:C.md}}>Fact: {t.factura}</span>}
+            </div>
+          </Panel>
+        ))}
+
+      <Modal open={mT} onClose={()=>{setMT(false);setF({});}} title={f.id?"✏️ Editar Trabajo":"🔧 Registrar Trabajo / Servicio"}>
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:"0.7rem",fontWeight:800,color:C.md,textTransform:"uppercase",letterSpacing:"0.4px",display:"block",marginBottom:8}}>Tipo de trabajo</label>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
+            {TIPOS_TRABAJO.map(t=>(
+              <button key={t} onClick={()=>sf("tipo",t)} style={{padding:"10px 6px",borderRadius:11,border:`2px solid ${f.tipo===t?C.ce:"#e2e8f0"}`,background:f.tipo===t?C.ce3:"#fff",cursor:"pointer",fontFamily:"inherit",fontWeight:800,color:f.tipo===t?C.ce:C.md,fontSize:"0.75rem",textAlign:"center"}}>
+                {t}
+              </button>
+            ))}
+          </div>
+          {f.tipo==="Otro"&&<input value={f.tipoManual||""} onChange={e=>sf("tipoManual",e.target.value)} placeholder="Describí el tipo de trabajo..." style={{marginTop:8,width:"100%",padding:"10px 13px",border:"1.5px solid #e2e8f0",borderRadius:12,fontFamily:"inherit",fontSize:"0.9rem",outline:"none"}}/>}
+        </div>
+
+        <FR>
+          <Inp label="Fecha" type="date" value={f.fecha||hoy()} onChange={v=>sf("fecha",v)}/>
+          <Inp label="Campo (opcional)" value={f.campoId||""} onChange={v=>sf("campoId",v)} opts={[{v:"",l:"-- Sin campo --"},...db.campos.map(c=>({v:c.id,l:c.nombre}))]}/>
+        </FR>
+        <FR>
+          <Inp label="Proveedor / Persona" value={f.proveedor||""} onChange={v=>sf("proveedor",v)} placeholder="Ej: Juan el mecánico"/>
+          <Inp label="Teléfono" value={f.tel||""} onChange={v=>sf("tel",v)} placeholder="Opcional"/>
+        </FR>
+        <Inp label="Descripción del trabajo" value={f.desc||""} onChange={v=>sf("desc",v)} placeholder="Ej: Arreglo bomba de agua, cambio de aceite, etc." sx={{marginBottom:10}}/>
+        
+        <div style={{background:C.v3,border:"1.5px solid #b8f0d8",borderRadius:13,padding:13,marginBottom:10}}>
+          <div style={{fontSize:"0.72rem",fontWeight:800,color:C.v,textTransform:"uppercase",marginBottom:9}}>💰 Pago</div>
+          <FR>
+            <Inp label="Monto ($)" type="number" value={f.monto||""} onChange={v=>sf("monto",v)} placeholder="Ej: 50000"/>
+            <Inp label="Estado" value={f.estado||"Pagado"} onChange={v=>sf("estado",v)} opts={["Pagado","Pendiente","Parcial"]}/>
+          </FR>
+          <div style={{marginBottom:8}}>
+            <label style={{fontSize:"0.7rem",fontWeight:800,color:C.md,textTransform:"uppercase",letterSpacing:"0.4px",display:"block",marginBottom:8}}>Forma de pago</label>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
+              {MODALIDADES.map(m=>(
+                <button key={m} onClick={()=>sf("modalidad",m)} style={{padding:"9px 6px",borderRadius:10,border:`2px solid ${f.modalidad===m?C.az:"#e2e8f0"}`,background:f.modalidad===m?C.az3:"#fff",cursor:"pointer",fontFamily:"inherit",fontWeight:800,color:f.modalidad===m?C.az:C.md,fontSize:"0.75rem"}}>{m}</button>
+              ))}
+            </div>
+          </div>
+          {f.estado==="Parcial"&&<Inp label="Monto pagado hasta ahora ($)" type="number" value={f.montoPagado||""} onChange={v=>sf("montoPagado",v)} sx={{marginBottom:0}}/>}
+        </div>
+
+        <Inp label="Nº Factura / Remito (opcional)" value={f.factura||""} onChange={v=>sf("factura",v)} sx={{marginBottom:4}}/>
+        <MBtns onClose={()=>{setMT(false);setF({});}} sv="teal" onSave={()=>{
+          const tipoReal=f.tipo==="Otro"?(f.tipoManual||"Otro"):f.tipo;
+          const nd=f.id
+            ?addMov({...db,trabajos:(db.trabajos||[]).map(x=>x.id===f.id?{...f,tipo:tipoReal}:x)},`✏️ Trabajo editado: ${tipoReal}`)
+            :addMov({...db,trabajos:[...(db.trabajos||[]),{id:Date.now(),...f,tipo:tipoReal,monto:parseFloat(f.monto)||0}]},`🔧 ${tipoReal}: ${f.proveedor||""} $${fmt(f.monto)}`);
+          setDb(nd);setMT(false);setF({});
+        }}/>
+      </Modal>
+    </div>
+  );
+}
+
 function SecDatos({db,setDb}){
   const ref=useRef();
   const [msg,setMsg]=useState("");
@@ -2131,7 +2257,7 @@ const NAVS=[
   {id:"ventas",l:"Ventas",i:"📋"},{id:"maquinas",l:"Máquinas",i:"🚜"},
   {id:"camiones",l:"Camiones",i:"🚛"},{id:"personal",l:"Personal",i:"👷"},
   {id:"comb",l:"Combustible",i:"⛽"},{id:"agenda",l:"Agenda",i:"📅"},
-  {id:"reporte",l:"Reporte",i:"📊"},
+  {id:"trabajos",l:"Trabajos",i:"🔧"},{id:"reporte",l:"Reporte",i:"📊"},
   {id:"datos",l:"Mis Datos",i:"💾"},
 ];
 // 5 accesos rápidos fijos abajo
@@ -2216,14 +2342,14 @@ function App(){
       setUser(u);
       setAuthLoading(false);
     });
-    return ()=>dbRef.off("value",handler);
+    return ()=>unsub();
   },[]);
 
   // Firebase sync - listen to changes
   useEffect(()=>{
     if(!user)return;
     const dbRef=fbDb.ref("genafarm/datos");
-    dbRef.on("value",(snapshot)=>{
+    const handler=dbRef.on("value",(snapshot)=>{
       const data=snapshot.val();
       if(data){
         setDb({...initDB(),...data});
@@ -2299,6 +2425,7 @@ function App(){
         {sec==="personal" &&<SecPersonal db={db} setDb={save}/>}
         {sec==="comb"     &&<SecCombustible db={db} setDb={save}/>}
         {sec==="agenda"   &&<SecAgenda db={db} setDb={save}/>}
+        {sec==="trabajos" &&<SecTrabajos db={db} setDb={save}/> }
         {sec==="reporte"  &&<SecReporte db={db}/>}
         {sec==="datos"    &&<SecDatos db={db} setDb={save}/>}
       </div>
